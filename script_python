@@ -1,217 +1,193 @@
-# ==============================================================================
-# PROJETO INTEGRADOR - ESPECIALIZAÇÃO EM CIÊNCIA DE DADOS (UTFPR)
-# Autora: Kelly Cristina Rodrigues
-# Script Ajustado: Processamento de Dados, Análise Temporal e Modelagem Preditiva
-# Base de Dados: Estatísticas de Meios de Pagamentos Mensais (Banco Central do Brasil)
-# ==============================================================================
+"""Análise exploratória simples das movimentações mensais por PIX e TED.
 
+Entrada principal: dados/Meios de Pagamentos Mensais.csv
+Saídas: base tratada, tabelas-resumo e gráficos usados no relatório.
+"""
+
+from pathlib import Path
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.preprocessing import StandardScaler
+
+ROOT = Path(__file__).resolve().parents[1]
+DATA = ROOT / "dados"
+TABLES = ROOT / "resultados" / "tabelas"
+CHARTS = ROOT / "resultados" / "graficos"
+
+TABLES.mkdir(parents=True, exist_ok=True)
+CHARTS.mkdir(parents=True, exist_ok=True)
+
+INPUT = DATA / "Meios de Pagamentos Mensais.csv"
+if not INPUT.exists():
+    raise FileNotFoundError(f"Arquivo não encontrado: {INPUT}")
+
+df = pd.read_csv(INPUT, dtype=str)
 
 
-def carregar_e_tratar_dados(caminho_csv):
-  """Carrega a base do BCB, realiza conversões de tipos, ordenação cronológica e
-
-  engenharia de atributos descritivos.
-  """
-  # 1. Carga do arquivo CSV original do BCB
-  df = pd.read_csv(caminho_csv)
-  print(
-      f'[INFO] Arquivo carregado: {df.shape[0]} linhas e {df.shape[1]} colunas.'
-  )
-
-  # 2. Conversão de colunas numéricas (substituição de vírgula decimal por ponto)
-  cols_numericas = [c for c in df.columns if c != 'AnoMes']
-  for col in cols_numericas:
-    df[col] = df[col].astype(str).str.replace(',', '.').astype(float)
-
-  # 3. Tratamento de datas e ordenação cronológica
-  df['AnoMes_str'] = df['AnoMes'].astype(str)
-  df['Data'] = pd.to_datetime(df['AnoMes_str'], format='%Y%m')
-  df = df.sort_values('Data').reset_index(drop=True)
-  df['Ano'] = df['Data'].dt.year
-  df['Mes'] = df['Data'].dt.month
-
-  # 4. Engenharia de Atributos Descritivos
-  # Ticket Médio por transação (R$)
-  df['TED_Ticket_Medio_R'] = np.where(
-      df['quantidadeTED'] > 0,
-      (df['valorTED'] * 1000000) / (df['quantidadeTED'] * 1000),
-      0,
-  )
-  df['PIX_Ticket_Medio_R'] = np.where(
-      df['quantidadePix'] > 0,
-      (df['valorPix'] * 1000000) / (df['quantidadePix'] * 1000),
-      0,
-  )
-
-  # Participação do PIX na quantidade total de transações eletrônicas (%)
-  df['Total_Qtd_Eletronica'] = (
-      df['quantidadeTED']
-      + df['quantidadePix']
-      + df['quantidadeDOC']
-      + df['quantidadeBoleto']
-  )
-  df['PIX_Share_Qtd_Pct'] = np.where(
-      df['Total_Qtd_Eletronica'] > 0,
-      (df['quantidadePix'] / df['Total_Qtd_Eletronica']) * 100,
-      0,
-  )
-
-  # Marcadores temporais
-  df['Era_Post_PIX'] = (df['Data'] >= '2020-11-01').astype(int)
-  df['Indice_Mes'] = np.arange(1, len(df) + 1)
-
-  return df
+def para_numero(serie: pd.Series) -> pd.Series:
+    texto = serie.astype(str).str.strip()
+    # A vírgula representa o separador decimal no arquivo do BCB
+    texto = texto.str.replace(",", ".", regex=False)
+    return pd.to_numeric(texto, errors="coerce")
 
 
-def gerar_estatisticas_resumo(df):
-  """Exibe no terminal os principais indicadores descritivos das séries analisadas."""
-  df_post = df[df['Era_Post_PIX'] == 1]
+numeric_cols = [c for c in df.columns if c != "AnoMes"]
+for col in numeric_cols:
+    df[col] = para_numero(df[col])
 
-  print(
-      '\n--- RESUMO DE INDICADORES MÉDIOS PÓS-LANÇAMENTO DO PIX (NOV/2020 A'
-      ' AGO/2026) ---'
-  )
-  print(
-      'PIX - Quantidade Média Mensal:'
-      f" {df_post['quantidadePix'].mean():,.2f} mil transações"
-  )
-  print(
-      'PIX - Volume Médio Mensal: R$'
-      f" {df_post['valorPix'].mean():,.2f} milhões"
-  )
-  print(
-      'PIX - Ticket Médio Estimado: R$'
-      f" {df_post['PIX_Ticket_Medio_R'].mean():,.2f}"
-  )
+df["AnoMes"] = pd.to_numeric(df["AnoMes"], errors="coerce").astype("Int64")
+df["Data"] = pd.to_datetime(df["AnoMes"].astype(str), format="%Y%m", errors="coerce")
 
-  print(
-      '\nTED - Quantidade Média Mensal:'
-      f" {df_post['quantidadeTED'].mean():,.2f} mil transações"
-  )
-  print(
-      'TED - Volume Médio Mensal: R$'
-      f" {df_post['valorTED'].mean():,.2f} milhões"
-  )
-  print(
-      'TED - Ticket Médio Estimado: R$'
-      f" {df_post['TED_Ticket_Medio_R'].mean():,.2f}"
-  )
+df = df.dropna(subset=["Data"]).sort_values("Data").drop_duplicates("Data").reset_index(drop=True)
 
-  ultimo = df.iloc[-1]
-  print(f"\n--- ÚLTIMA OBSERVAÇÃO DISPONÍVEL ({ultimo['AnoMes']}) ---")
-  print(
-      f"PIX Ticket Médio: R$ {ultimo['PIX_Ticket_Medio_R']:.2f} | Share de"
-      f" Qtd: {ultimo['PIX_Share_Qtd_Pct']:.2f}%"
-  )
-  print(f"TED Ticket Médio: R$ {ultimo['TED_Ticket_Medio_R']:.2f}")
+selected = ["quantidadePix", "valorPix", "quantidadeTED", "valorTED"]
+if df[selected].isna().any().any():
+    raise ValueError("Foram encontrados valores ausentes nas colunas principais após a conversão.")
 
+df["Ano"] = df["Data"].dt.year
+df["Mes"] = df["Data"].dt.month
 
-def executar_modelagem_preditiva(df):
-  """Executa a engenharia de atributos temporais (lags/sazonalidade), divisão
+# Quantidades estão em milhares e valores em R$ milhões
+df["ticketPix_R"] = np.where(df["quantidadePix"] > 0, df["valorPix"] / df["quantidadePix"] * 1000, np.nan)
+df["ticketTED_R"] = np.where(df["quantidadeTED"] > 0, df["valorTED"] / df["quantidadeTED"] * 1000, np.nan)
 
-  cronológica treino/teste e avaliação de modelos de regressão.
-  """
-  df_ml = df[df['Era_Post_PIX'] == 1].copy().reset_index(drop=True)
+total_qtd = df["quantidadePix"] + df["quantidadeTED"]
+df["sharePix_qtd_pct"] = np.where(total_qtd > 0, df["quantidadePix"] / total_qtd * 100, np.nan)
+df["variacao_mensal_qtd_pix_pct"] = df["quantidadePix"].where(df["quantidadePix"] > 0).pct_change() * 100
+df["variacao_mensal_qtd_ted_pct"] = df["quantidadeTED"].pct_change() * 100
 
-  # 1. Engenharia de Atributos Temporais (Prevenção de Target Leakage)
-  df_ml['valorPix_Lag1'] = df_ml['valorPix'].shift(1)
-  df_ml['valorPix_Lag2'] = df_ml['valorPix'].shift(2)
-  df_ml['quantidadePix_Lag1'] = df_ml['quantidadePix'].shift(1)
-  df_ml['valorTED_Lag1'] = df_ml['valorTED'].shift(1)
+common = df[df["quantidadePix"] > 0].copy()
 
-  # Sazonalidade cíclica mensal
-  df_ml['Mes_Sin'] = np.sin(2 * np.pi * df_ml['Mes'] / 12)
-  df_ml['Mes_Cos'] = np.cos(2 * np.pi * df_ml['Mes'] / 12)
-
-  # Remoção dos primeiros meses que contêm NaN decorrentes dos lags
-  df_clean = df_ml.dropna().reset_index(drop=True)
-
-  # Definição das variáveis explicativas (X) e alvo (y)
-  features = [
-      'Indice_Mes',
-      'Mes_Sin',
-      'Mes_Cos',
-      'valorPix_Lag1',
-      'valorPix_Lag2',
-      'quantidadePix_Lag1',
-      'valorTED_Lag1',
-  ]
-  target = 'valorPix'
-
-  X = df_clean[features]
-  y = df_clean[target]
-
-  # 2. Divisão Cronológica para Séries Temporais (80% Treino Antigo, 20% Teste Recente)
-  split_idx = int(len(df_clean) * 0.80)
-  X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
-  y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
-
-  # Padronização de escala
-  scaler = StandardScaler()
-  X_train_scaled = scaler.fit_transform(X_train)
-  X_test_scaled = scaler.transform(X_test)
-
-  # 3. Modelos Preditivos
-  modelos = {
-      'Regressão Linear (com Lags)': (LinearRegression(), True),
-      'Random Forest Regressor': (
-          RandomForestRegressor(n_estimators=100, random_state=42),
-          False,
-      ),
-      'Gradient Boosting Regressor': (
-          GradientBoostingRegressor(
-              n_estimators=100, learning_rate=0.05, random_state=42
-          ),
-          False,
-      ),
-  }
-
-  resultados = []
-
-  for nome, (model, precisa_escalar) in modelos.items():
-    if precisa_escalar:
-      model.fit(X_train_scaled, y_train)
-      y_pred = model.predict(X_test_scaled)
-    else:
-      model.fit(X_train, y_train)
-      y_pred = model.predict(X_test)
-
-    mae = mean_absolute_error(y_test, y_pred)
-    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-    mape = np.mean(np.abs((y_test - y_pred) / y_test)) * 100
-    r2 = r2_score(y_test, y_pred)
-
-    resultados.append({
-        'Algoritmo': nome,
-        'MAE (R$ Mi)': round(mae, 2),
-        'RMSE (R$ Mi)': round(rmse, 2),
-        'MAPE (%)': round(mape, 2),
-        'R² Score': round(r2, 4),
-    })
-
-  return pd.DataFrame(resultados)
+annual = common.groupby("Ano", as_index=False).agg(
+    meses=("Data", "count"),
+    quantidade_pix=("quantidadePix", "sum"),
+    valor_pix=("valorPix", "sum"),
+    quantidade_ted=("quantidadeTED", "sum"),
+    valor_ted=("valorTED", "sum"),
+)
+annual["ticket_pix_R"] = annual["valor_pix"] / annual["quantidade_pix"] * 1000
+annual["ticket_ted_R"] = annual["valor_ted"] / annual["quantidade_ted"] * 1000
+annual["share_pix_qtd_pct"] = annual["quantidade_pix"] / (annual["quantidade_pix"] + annual["quantidade_ted"]) * 100
+annual["crescimento_qtd_pix_pct"] = annual["quantidade_pix"].pct_change() * 100
+annual["crescimento_qtd_ted_pct"] = annual["quantidade_ted"].pct_change() * 100
+annual.to_csv(TABLES / "resumo_anual.csv", index=False)
 
 
-if __name__ == '__main__':
-  caminho_arquivo = 'Meios de Pagamentos Mensais.csv'
+def resumo_meio(nome, qtd, valor, ticket):
+    return {
+        "Meio": nome,
+        "Quantidade média mensal (milhares)": qtd.mean(),
+        "Quantidade mediana mensal (milhares)": qtd.median(),
+        "Quantidade mínima mensal (milhares)": qtd.min(),
+        "Quantidade máxima mensal (milhares)": qtd.max(),
+        "Valor médio mensal (R$ milhões)": valor.mean(),
+        "Valor mediano mensal (R$ milhões)": valor.median(),
+        "Ticket médio agregado (R$)": valor.sum() / qtd.sum() * 1000,
+        "Ticket mínimo mensal (R$)": ticket.min(),
+        "Ticket máximo mensal (R$)": ticket.max(),
+    }
 
-  # Processamento e exportação da base tratada
-  df_processado = carregar_e_tratar_dados(caminho_arquivo)
-  df_processado.to_csv(
-      'Meios_de_Pagamentos_Mensais_Tratado.csv',
-      index=False,
-      encoding='utf-8-sig',
-  )
 
-  # Exibição dos resultados
-  gerar_estatisticas_resumo(df_processado)
-  df_res = executar_modelagem_preditiva(df_processado)
+stats = pd.DataFrame([
+    resumo_meio("PIX", common["quantidadePix"], common["valorPix"], common["ticketPix_R"]),
+    resumo_meio("TED", common["quantidadeTED"], common["valorTED"], common["ticketTED_R"]),
+])
+stats.to_csv(TABLES / "estatistica_descritiva.csv", index=False)
 
-  print('\n--- RESULTADOS EXPERIMENTAIS DA MODELAGEM PREDITIVA (AJUSTADA) ---')
-  print(df_res.to_string(index=False))
+first, last = common.iloc[0], common.iloc[-1]
+key = pd.DataFrame({
+    "Indicador": [
+        "Número de meses no período comum",
+        "Crescimento da quantidade mensal de PIX entre primeiro e último mês (%)",
+        "Variação da quantidade mensal de TED entre primeiro e último mês (%)",
+        "Participação do PIX na quantidade PIX+TED no último mês (%)",
+        "Ticket PIX no último mês (R$)",
+        "Ticket TED no último mês (R$)",
+    ],
+    "Valor": [
+        len(common),
+        (last["quantidadePix"] / first["quantidadePix"] - 1) * 100,
+        (last["quantidadeTED"] / first["quantidadeTED"] - 1) * 100,
+        last["sharePix_qtd_pct"],
+        last["ticketPix_R"],
+        last["ticketTED_R"],
+    ],
+})
+key.to_csv(TABLES / "indicadores_chave.csv", index=False)
+
+plt.style.use("seaborn-v0_8-whitegrid")
+COLORS = {"PIX": "#0B7285", "TED": "#E67700"}
+
+
+def save_line(y1, y2, ylabel, title, filename, scale1=1, scale2=1):
+    fig, ax = plt.subplots(figsize=(9, 4.7))
+    ax.plot(common["Data"], y1 / scale1, label="PIX", color=COLORS["PIX"], linewidth=2.2)
+    ax.plot(common["Data"], y2 / scale2, label="TED", color=COLORS["TED"], linewidth=2.0)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(CHARTS / filename, dpi=220)
+    plt.close(fig)
+
+
+save_line(
+    common["quantidadePix"],
+    common["quantidadeTED"],
+    "Bilhões de transações",
+    "Quantidade mensal de transações",
+    "01_quantidade_mensal.png",
+    1e6,
+    1e6,
+)
+save_line(
+    common["valorPix"],
+    common["valorTED"],
+    "R$ trilhões",
+    "Valor mensal movimentado",
+    "02_valor_mensal.png",
+    1e6,
+    1e6,
+)
+
+fig, ax = plt.subplots(figsize=(9, 4.7))
+ax.plot(common["Data"], common["ticketPix_R"], label="PIX", color=COLORS["PIX"], linewidth=2.2)
+ax.plot(common["Data"], common["ticketTED_R"], label="TED", color=COLORS["TED"], linewidth=2.0)
+ax.set_yscale("log")
+ax.set_ylabel("R$ por transação (escala logarítmica)")
+ax.set_title("Ticket médio mensal")
+ax.legend()
+fig.tight_layout()
+fig.savefig(CHARTS / "03_ticket_medio.png", dpi=220)
+plt.close(fig)
+
+fig, ax = plt.subplots(figsize=(9, 4.7))
+ax.plot(common["Data"], common["sharePix_qtd_pct"], color="#5F3DC4", linewidth=2.2)
+ax.set_ylim(0, 100)
+ax.set_ylabel("Participação (%)")
+ax.set_title("Participação do PIX na quantidade combinada de PIX e TED")
+fig.tight_layout()
+fig.savefig(CHARTS / "04_participacao_pix.png", dpi=220)
+plt.close(fig)
+
+# Anos completos comparáveis
+plot_annual = annual[annual["meses"] == 12].copy()
+x = np.arange(len(plot_annual))
+fig, ax = plt.subplots(figsize=(9, 4.7))
+w = 0.36
+ax.bar(x - w / 2, plot_annual["quantidade_pix"] / 1e6, w, label="PIX", color=COLORS["PIX"])
+ax.bar(x + w / 2, plot_annual["quantidade_ted"] / 1e6, w, label="TED", color=COLORS["TED"])
+ax.set_xticks(x, plot_annual["Ano"].astype(str))
+ax.set_ylabel("Bilhões de transações no ano")
+ax.set_title("Quantidade anual - anos completos")
+ax.legend()
+fig.tight_layout()
+fig.savefig(CHARTS / "05_quantidade_anual.png", dpi=220)
+plt.close(fig)
+
+df.to_csv(DATA / "Meios_de_Pagamentos_Mensais_Tratado_Reproduzido.csv", index=False)
+common.to_csv(DATA / "pix_ted_periodo_comum.csv", index=False)
+
+print("Análise concluída.")
+print(f"Registros tratados: {len(df)} | Período comum: {len(common)} meses")
+print(stats.to_string(index=False))
