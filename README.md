@@ -25,8 +25,6 @@ python -m venv .venv
 
 # Windows: .venv\Scripts\activate
 
-# Linux/macOS: source .venv/bin/activate
-
 pip install -r requirements.txt
 
 python src/analise_pix_ted.py
